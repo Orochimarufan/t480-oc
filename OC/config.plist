@@ -1473,7 +1473,7 @@
 				<key>Comment</key>
 				<string>HoRNDIS.kext</string>
 				<key>Enabled</key>
-				<true/>
+				<false/>
 				<key>ExecutablePath</key>
 				<string>Contents/MacOS/HoRNDIS</string>
 				<key>MaxKernel</key>
