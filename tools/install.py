@@ -3,15 +3,17 @@
 import plistlib
 from abc import ABC, abstractmethod
 from argparse import ArgumentParser
-from binascii import a2b_base64
+from base64 import b32hexencode, b64decode
 from functools import cached_property
+from functools import partial as bind
 from hashlib import file_digest, sha256
 from os import fspath, isatty
 from pathlib import Path
-from shutil import rmtree, which
+from shutil import copy, rmtree, which
 from subprocess import check_call
 from sys import argv, stderr
-from typing import IO, Optional, Sequence, Union, Callable, Any
+from typing import (IO, Any, Callable, Literal, Optional, Sequence, TypeVar,
+                    Union)
 
 from cryptography.hazmat.primitives.asymmetric.padding import PKCS1v15
 from cryptography.hazmat.primitives.asymmetric.rsa import (
@@ -21,16 +23,22 @@ from cryptography.hazmat.primitives.serialization import (Encoding,
                                                           PrivateFormat,
                                                           load_pem_private_key)
 from dotenv import dotenv_values
-
+from signify.authenticode import SignedPEFile
 
 # ===================================================================
 # Helpers
+T = TypeVar('T')
+U = TypeVar('U')
+
 if isatty(stderr.fileno()):
-    def msg(msg: str, *, prefix="==", color=33, file=stderr):
+    def msg(msg: str, *, prefix="", color=0, file=stderr):
         print(f"\033[{color}m{prefix}", msg, "\033[0m", file=file)
 else:
-    def msg(msg: str, *, prefix="==", color=None, file=stderr):
+    def msg(msg: str, *, prefix="", color=None, file=stderr):
         print(prefix, msg, file=file)
+
+msg_head = bind(msg, prefix="==", color=33)
+msg_err = bind(msg, prefix="!!", color=31)
 
 def ask_choice(question: str, choices={"yes": True, "no": False}, default="no", *, sentinel=object()):
     if default is not None and default not in choices:
@@ -70,6 +78,12 @@ def lookup_tool(name: str, path: Optional[Path]) -> Path:
         raise FileNotFoundError(f"Could not find tool '{name}' in $PATH")
     return Path(xpath)
 
+def optmap(fn: Callable[[T], U], opt: Optional[T]) -> Optional[U]:
+    return fn(opt) if opt is not None else None
+
+def b2a_b32h_nopad(data: bytes) -> str:
+    return b32hexencode(data).decode('ascii').rstrip('=')
+
 class SignTool(ABC):
     @abstractmethod
     def sign_file(self, path: Path, out_path: Optional[Path]): ...
@@ -84,7 +98,15 @@ class Config:
     # EFI
     esp_path: Path = Path("/efi")
     esp_name: str = "OC"
+    esp_backup: Optional[str] = "OC.bak"
+    esp_restore_on_error: bool = True
+
+    # SecureBoot
     sb_tool: Optional[SignTool]
+    sb_cache_path: Optional[Path]
+    sb_cache_fmt: str = "{stem}.{hash}{suffix}"
+    sb_cache_opencore: Literal['auto', 'always', 'never'] = 'auto'
+    sb_cache_mismatch: bool = False
 
     # OC Vault
     vault_key_size: int = 2048
@@ -99,9 +121,9 @@ class Config:
         self.root = root
         self.env = env
 
-        toolname = env.get("SB_TOOL", None)
+        # SecureBoot signing tool
+        toolname: Optional[str] = optmap(str.lower, env.get("SB_TOOL", None))
         if toolname:
-            toolname = toolname.lower()
             try:
                 tool = SB_TOOLS[toolname]
             except KeyError:
@@ -112,11 +134,34 @@ class Config:
         else:
             self.sb_tool = None
 
+        # SecureBoot cache
+        self.sb_cache_path = optmap(Path, env.get("SB_CACHE_PATH", None))
+
+        fmt: Optional[str] = env.get("SB_CACHE_FORMAT", None)
+        if fmt:
+            if "%n" not in cache and "%h" not in fmt:
+                raise ValueError(f"SB_CACHE_FORMAT must include atleast one of %n or %h: {fmt}")
+            self.sb_cache_fmt = (cache
+                .replace("{", "{{")
+                .replace("}", "}}")
+                .replace("%n", "{stem}")
+                .replace("%h", "{hash}")
+                .replace("%e", "{suffix}"))
+
+        self.sb_cache_opencore = env.get("SB_CACHE_OPENCORE", self.sb_cache_opencore)
+        if self.sb_cache_opencore not in ('auto', 'always', 'never'):
+            raise ValueError(f"Invalid value for SB_CACHE_OPENCORE: {self.sb_cache_opencore}")
+        self.sb_cache_mismatch = env.get("SB_CACHE_IGNORE_MISMATCH", 'false') in ('true', 'yes')
+
+        # ESP stuff
         self.esp_path = Path(env.get("ESP_PATH", self.esp_path)) # TODO: detection?
         self.esp_name = env.get("ESP_NAME", self.esp_name)
+        self.esp_backup = env.get("ESP_BACKUP", self.esp_backup) or None
+        self.esp_restore_on_error = optmap(str.lower, env.get("ESP_RESTORE_ON_ERROR", None)) not in ('false', 'no')
 
-        vault_key_file = env.get("VAULT_KEY_FILE", None)
-        self.vault_key_file = Path(vault_key_file) if vault_key_file else None
+        # Vault signing
+        self.vault_key_size = int(env.get("VAULT_KEY_SIZE", self.vault_key_size))
+        self.vault_key_file = optmap(Path, env.get("VAULT_KEY_FILE", None))
 
     @property
     def oc_dir(self):
@@ -127,13 +172,13 @@ class Config:
         """ Load or generate vault private key """
         # TODO: log key source, password!
         if self.vault_key_file and self.vault_key_file.exists():
-            msg(f"Loading vault key from file: {self.vault_key_file}", prefix="")
+            msg(f"Loading vault key from file: {self.vault_key_file}")
             return load_pem_private_key(
                 data=self.vault_key_file.read_bytes(),
                 password=None
             )
         else:
-            msg(f"Generating new vault key (RSA {self.vault_key_size})", prefix="")
+            msg(f"Generating new vault key (RSA {self.vault_key_size})")
             vault_key = generate_private_key(
                 public_exponent=0x10001, # 65537
                 key_size=self.vault_key_size,
@@ -144,12 +189,44 @@ class Config:
                     format=PrivateFormat.PKCS8,
                     encryption_algorithm=None
                 ))
-                msg(f"Saved vault key to file: {self.vault_key_file}", prefix="")
+                msg(f"Saved vault key to file: {self.vault_key_file}")
             return vault_key
+
+    @property
+    def is_vault_persistent(self):
+        return self.vault_key_file is not None
 
 
 # ===================================================================
 # Crypto
+def hash_file(conf: Config, path: Path) -> bytes:
+    with path.open('rb') as f:
+        return file_digest(f, conf.vault_hash_fn).digest()
+
+def copy_and_hash(conf: Config, src: Path, dst: Path, *, bufsize=2**18) -> bytes:
+    with open(src, "rb") as fs:
+        digest = conf.vault_hash_fn()
+        with open(dst, "wb") as fd:
+            buffer = bytearray(bufsize)
+            view = memoryview(buffer)
+            while True:
+                read = fs.readinto(buffer)
+                if read == 0:
+                    break
+                data = view[:read]
+                digest.update(data)
+                fd.write(data)
+        return digest.digest()
+
+def maybe_copy_and_hash(conf: Config, src: Path, dst: Optional[Path], return_digest: bool) -> Optional[bytes]:
+    if dst is not None:
+        if return_digest:
+            return copy_and_hash(conf, src, dst)
+        else:
+            copy(src, dst)
+    elif return_digest:
+        return hash_file(conf, src)
+
 
 # -------------------------------------------------------------------
 # SecureBoot signing tools
@@ -182,18 +259,90 @@ class Sbsign(SignTool):
         ])
 
 
+class Cacheonly(SignTool):
+    def __init__(self, allow_unsigned: Optional[str]=None):
+        self.allow_unsigned = allow_unsigned.lower() in ('yes', 'true')
+
+    def sign_file(self, path, out_path):
+        if not self.allow_unsigned:
+            raise LookupError("Suitable signed UEFI image not found in cache (SB_TOOL=cacheonly)")
+        msg_err("No matching signed UEFI image in cache. Copying unsigned image.")
+        maybe_copy_and_hash(conf, path, out_path, False)
+
+
 SB_TOOLS = {
     "sbctl": Sbctl,
     "sbsign": Sbsign,
+    "cacheonly": Cacheonly,
 }
+
+def get_pe_hash(pe: SignedPEFile, hash_fn=sha256) -> bytes:
+    fp = pe.get_fingerprinter()
+    fp.add_authenticode_hashers(hash_fn)
+    return next(iter(fp.hashes()['authentihash'].values()))
+
+def sign_pe_image(conf: Config, path: Path, out_path: Optional[Path]=None, *, return_file_digest: bool=False, dont_cache: bool=False) -> Optional[bytes]:
+    """ Sign an UEFI executable """
+    if not conf.sb_tool:
+        return maybe_copy_and_hash(conf, src, dst, return_file_digest)
+
+    # Check cache
+    cache_file: Optional[Path] = None
+    if conf.sb_cache_path:
+        # Compute hash
+        with path.open('rb') as f:
+            pe = SignedPEFile(f)
+            digest = get_pe_hash(pe)
+
+        cache_file = conf.sb_cache_path / conf.sb_cache_fmt.format(
+            stem=path.stem,
+            hash=b2a_b32h_nopad(digest),
+            suffix=path.suffix)
+
+        if cache_file.exists():
+            # Check match
+            with cache_file.open('rb') as f:
+                pe = SignedPEFile(f)
+                cache_ok = True
+                # Check that it's actually signed
+                # TODO: allow specifying pubkey to verify against. For now, ignore cert error
+                status, err = pe.explain_verify()
+                if status not in (status.OK, status.CERTIFICATE_ERROR):
+                    msg_err(f"Cached SecureBoot image isn't properly signed: {cache_file}")
+                    import traceback
+                    msg_err(traceback.format_exception_only(None, err))
+                    cache_ok = False
+                # Check that it matches our file
+                cache_digest = get_pe_hash(pe)
+                if cache_digest != digest:
+                    if conf.sb_cache_mismatch:
+                        msg(f"Cached SecureBoot image doesn't match, using anyway.", prefix="!!")
+                    else:
+                        msg_err(f"Cached SecureBoot image doesn't match, ignoring: {cache_file}")
+                        cache_ok = False
+                    msg(f"Checksums: {b2a_b32h_nopad(cache_digest)} != {b2a_b32h_nopad(digest)}")
+            # Use cache
+            if cache_ok:
+                msg(f"Using signed image from {cache_file}")
+                return maybe_copy_and_hash(conf, cache_file, out_path if out_path is not None else path, return_file_digest)
+
+    # Try to sign the file using configured tool
+    conf.sb_tool.sign_file(path, out_path)
+
+    if out_path is None:
+        out_path = path
+
+    # Maybe cache image for later use
+    if cache_file is not None and not dont_cache:
+        msg(f"Caching signed image to {cache_file}")
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        return maybe_copy_and_hash(conf, out_path, cache_file, return_file_digest)
+    elif return_file_digest:
+        return hash_file(conf, out_path)
 
 def install_sign_efi(conf: Config, src: Path, dst: Path) -> bytes:
     """ Sign UEFI executable and return digest """
-    if not conf.sb_tool:
-        return copy_and_hash(conf, src, dst)
-    conf.sb_tool.sign_file(src, dst)
-    with dst.open('rb') as f:
-        return file_digest(f, conf.vault_hash_fn).digest()
+    return sign_pe_image(conf, src, dst, return_file_digest=True)
 
 
 # -------------------------------------------------------------------
@@ -247,8 +396,9 @@ def install_opencore_efi(conf: Config, src: Path, dest: Path):
         if pubkey_len > 528:
             raise OverflowError("vault public key data too big")
         f.write(view[offset+pubkey_len:])
-    if conf.sb_tool:
-        conf.sb_tool.sign_file(dest, None)
+    sign_pe_image(conf, dest, None,
+        dont_cache=conf.sb_cache_opencore == 'never'
+            or conf.sb_cache_opencore == 'auto' and not conf.is_vault_persistent)
 
 def sign_vault(conf: Config, files: dict, esp_oc_dir: Path):
     """ Create and sign vault file """
@@ -273,13 +423,13 @@ ENV_CONFIG_KEYS: dict[str, tuple[tuple[str,...], Callable[[str], PlistValue]]] =
     # Identity
     "SYSTEM_SERIAL": (("PlatformInfo", "Generic", "SystemSerialNumber"), str),
     "SYSTEM_MLB": (("PlatformInfo", "Generic", "MLB"), str),
-    "SYSTEM_ROM": (("PlatformInfo", "Generic", "ROM"), a2b_base64),
+    "SYSTEM_ROM": (("PlatformInfo", "Generic", "ROM"), b64decode),
     "SYSTEM_UUID": (("PlatformInfo", "Generic", "SystemUUID"), str),
 
     # Security
     "SEC_APECID": (("Misc", "Security", "ApECID"), int),
     "SEC_VAULT": (("Misc", "Security", "Vault"), str),
-    "SEC_SCAN": (("Misc", "Security", "ScanPolicy"), int),
+    "SEC_SCAN_POLICY": (("Misc", "Security", "ScanPolicy"), int),
 }
 
 def get_nested_key(dict: dict, path: Sequence[str]):
@@ -306,21 +456,6 @@ def install_config_plist(conf: Config, template: Path, dest: Path) -> bytes:
 
 # ===================================================================
 # Transfer files
-def copy_and_hash(conf: Config, src: Path, dst: Path, *, bufsize=2**18) -> bytes:
-    with open(src, "rb") as fs:
-        digest = conf.vault_hash_fn()
-        with open(dst, "wb") as fd:
-            buffer = bytearray(bufsize)
-            view = memoryview(buffer)
-            while True:
-                read = fs.readinto(buffer)
-                if read == 0:
-                    break
-                data = view[:read]
-                digest.update(data)
-                fd.write(data)
-        return digest.digest()
-
 def walk(root: Path):
     for path in root.iterdir():
         yield path
@@ -329,57 +464,75 @@ def walk(root: Path):
 
 def install_oc(conf: Config):
     oc_dir = conf.oc_dir
-    dest = conf.esp_path / "EFI" / conf.esp_name
+    efi_dir = conf.esp_path / "EFI"
+    dest = efi_dir / conf.esp_name
 
     if dest.exists():
-        msg(f"Removing existing {dest}")
-        rmtree(dest)
-
-    msg(f"Installing OpenCore from {oc_dir} to {dest}")
-    dest.mkdir(parents=True)
-
-    files: dict[str, bytes] = {}
-    def add(name: Path, digest: bytes):
-        files[str(name).replace('/', '\\')] = digest
-
-    opencore_efi: Optional[Path] = None
-
-    for path in walk(conf.oc_dir):
-        name = path.relative_to(oc_dir)
-        target = dest / name
-
-        if path.is_dir():
-            target.mkdir()
-            continue
-
-        lower = str(name).lower()
-
-        if name.name[0] == '.' or lower.rsplit('.', 1)[-1] in ("html", "log") or lower.startswith("vault."):
-            pass
-
-        elif lower == "config.plist":
-            print(f"[conf] {name}", file=stderr)
-            add(name, install_config_plist(conf, path, target))
-
-        elif lower == "opencore.efi":
-            opencore_efi = path
-
-        elif lower.endswith('.efi') and lower.startswith("drivers/"):
-            print(f"[sign] {name}", file=stderr)
-            add(name, install_sign_efi(conf, path, target))
-
+        if conf.esp_backup:
+            backup_dir = efi_dir / conf.esp_backup
+            msg_head(f"Renaming {dest} to {conf.esp_backup}")
+            if backup_dir.exists():
+                msg(f"Removing {backup_dir}")
+                rmtree(backup_dir)
+            dest.rename(backup_dir)
         else:
-            print(f"[copy] {name}", file=stderr)
-            add(name, copy_and_hash(conf, path, target))
+            msg_head(f"Removing existing {dest}")
+            rmtree(dest)
 
-    if not opencore_efi:
-        raise RuntimeError("Didn't find OpenCore.efi")
+    try:
+        msg_head(f"Installing OpenCore from {oc_dir} to {dest}")
+        dest.mkdir(parents=True)
 
-    msg("Signing Vault")
-    sign_vault(conf, files, dest)
+        files: dict[str, bytes] = {}
+        def add(name: Path, digest: bytes):
+            files[str(name).replace('/', '\\')] = digest
 
-    msg("Installing and signing main OpenCore executable")
-    install_opencore_efi(conf, opencore_efi, dest / opencore_efi.relative_to(oc_dir))
+        opencore_efi: Optional[Path] = None
+
+        for path in walk(conf.oc_dir):
+            name = path.relative_to(oc_dir)
+            target = dest / name
+
+            if path.is_dir():
+                target.mkdir()
+                continue
+
+            lower = str(name).lower()
+
+            if name.name[0] == '.' or lower.rsplit('.', 1)[-1] in ("html", "log") or lower.startswith("vault."):
+                pass
+
+            elif lower == "config.plist":
+                print(f"[conf] {name}", file=stderr)
+                add(name, install_config_plist(conf, path, target))
+
+            elif lower == "opencore.efi":
+                opencore_efi = path
+
+            elif lower.endswith('.efi') and lower.startswith("drivers/"):
+                print(f"[sign] {name}", file=stderr)
+                add(name, install_sign_efi(conf, path, target))
+
+            else:
+                print(f"[copy] {name}", file=stderr)
+                add(name, copy_and_hash(conf, path, target))
+
+        if not opencore_efi:
+            raise RuntimeError("Didn't find OpenCore.efi")
+
+        msg_head("Signing Vault")
+        sign_vault(conf, files, dest)
+
+        msg_head("Installing and signing main OpenCore executable")
+        install_opencore_efi(conf, opencore_efi, dest / opencore_efi.relative_to(oc_dir))
+
+    except:
+        if conf.esp_restore_on_error and conf.esp_backup:
+            backup_dir = efi_dir / conf.esp_backup
+            msg_head(f"Restoring backup from {backup_dir}")
+            rmtree(dest)
+            backup_dir.rename(dest)
+        raise
 
 
 def main(argv):
