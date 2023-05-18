@@ -1,0 +1,19 @@
+#!/usr/bin/env python3
+# Convert Plist to JSON
+# Mainly useful for using with jq. e.g. print all enabled kexts with version:
+# ./pj OC/config.plist \
+#     | jq -r '.Kernel.Add[] | select(.Enabled == true) | "\(.BundlePath)/\(.PlistPath)"' \
+#     | while read plist_path; do ./pj "OC/Kexts/$plist_path"; done \
+#     | jq -r '[.CFBundleName, .CFBundleVersion] | @tsv'
+
+import plistlib
+import json
+import argparse
+
+p = argparse.ArgumentParser()
+p.add_argument("file")
+args = p.parse_args()
+
+with open(args.file, "rb") as f:
+    print(json.dumps(plistlib.load(f), default=lambda x: repr(x)))
+
