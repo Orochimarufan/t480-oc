@@ -10,7 +10,15 @@ setup: .venv/pyvenv.cfg
 
 .PHONY: list
 list: setup
-	$(VENV) && python tools/proper-list.py
+	$(VENV) && python tools/proper-list.py OC/config.plist kexts
+
+.PHONY: ssdts
+ssdts: setup
+	$(VENV) && python tools/proper-list.py OC/config.plist ssdts
+
+.PHONY: newkext
+newkext: setup
+	$(VENV) && python tools/update-kexts.py OC/config.plist
 
 .PHONY: config
 config: .venv/ProperTree/ProperTree.py
