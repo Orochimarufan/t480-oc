@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-import plistlib
 from abc import ABC, abstractmethod
 from argparse import ArgumentParser
 from base64 import b32hexencode, b64decode
@@ -23,6 +22,8 @@ from cryptography.hazmat.primitives.serialization import (Encoding,
                                                           PrivateFormat,
                                                           load_pem_private_key)
 from dotenv import dotenv_values
+from oclib import (OcConfig, dump_plist, get_nested_key, read_plist,
+                   set_nested_key)
 from signify.authenticode import SignedPEFile
 
 # ===================================================================
@@ -402,10 +403,10 @@ def install_opencore_efi(conf: Config, src: Path, dest: Path):
 
 def sign_vault(conf: Config, files: dict, esp_oc_dir: Path):
     """ Create and sign vault file """
-    plist_data = plistlib.dumps({
+    plist_data = dump_plist({
         "Version": 1,
         "Files": files
-    }, fmt=plistlib.FMT_XML)
+    })
     sig_data = conf.vault_key.sign(
         data=plist_data,
         padding=PKCS1v15(),
@@ -432,24 +433,14 @@ ENV_CONFIG_KEYS: dict[str, tuple[tuple[str,...], Callable[[str], PlistValue]]] =
     "SEC_SCAN_POLICY": (("Misc", "Security", "ScanPolicy"), int),
 }
 
-def get_nested_key(dict: dict, path: Sequence[str]):
-    for segment in path:
-        dict = dict[segment]
-    return dict
-
-def set_nested_key(dict: dict, path: Sequence[str], value):
-    (*path, key) = path
-    get_nested_key(dict, path)[key] = value
-
 def install_config_plist(conf: Config, template: Path, dest: Path) -> bytes:
-    with open(template, "rb") as f:
-        data = plistlib.load(f)
+    data: OcConfig = read_plist(template)
 
     for key in ENV_CONFIG_KEYS & conf.env.keys():
         path, convert = ENV_CONFIG_KEYS[key]
         set_nested_key(data, path, convert(conf.env[key]))
 
-    plist_data = plistlib.dumps(data, fmt=plistlib.FMT_XML, sort_keys=False)
+    plist_data = dump_plist(data)
     dest.write_bytes(plist_data)
     return conf.vault_hash_fn(plist_data).digest()
 

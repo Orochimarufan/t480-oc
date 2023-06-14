@@ -4,7 +4,7 @@ import io
 import os
 import plistlib
 from base64 import b64encode
-from typing import TypedDict
+from typing import Sequence, TypedDict
 
 
 # OC Config Schema
@@ -92,6 +92,15 @@ def dump_plist(data: dict) -> bytes:
     f = io.BytesIO()
     PlistWriter(f, sort_keys=False).write(data)
     return f.getvalue()
+
+def get_nested_key(dict: dict, path: Sequence[str]):
+    for segment in path:
+        dict = dict[segment]
+    return dict
+
+def set_nested_key(dict: dict, path: Sequence[str], value):
+    (*path, key) = path
+    get_nested_key(dict, path)[key] = value
 
 
 # Misc
