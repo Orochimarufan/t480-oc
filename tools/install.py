@@ -11,6 +11,7 @@ from argparse import ArgumentParser
 from base64 import b32hexencode, b64decode
 from functools import cached_property
 from functools import partial as bind
+from getpass import getpass
 from hashlib import file_digest, sha256
 from os import fspath, isatty
 from pathlib import Path
@@ -183,12 +184,19 @@ class Config:
     @cached_property
     def vault_key(self) -> RSAPrivateKey:
         """ Load or generate vault private key """
-        # TODO: log key source, password!
+        # TODO: log key source
         if self.vault_key_file and self.vault_key_file.exists():
             msg(f"Loading vault key from file: {self.vault_key_file}")
+            try:
+                return load_pem_private_key(
+                    data=self.vault_key_file.read_bytes(),
+                    password=None
+                )
+            except TypeError:
+                pass
             return load_pem_private_key(
                 data=self.vault_key_file.read_bytes(),
-                password=None
+                password=getpass("Vault Key Passphrase").encode('utf-8')
             )
         else:
             msg(f"Generating new vault key (RSA {self.vault_key_size})")
@@ -197,10 +205,13 @@ class Config:
                 key_size=self.vault_key_size,
             )
             if self.vault_key_file:
+                encrypt = None
+                if passwd := getpass("New Vault Key Passphrase"):
+                    encrypt = BestAvailableEncryption(password=passwd.encode('utf-8'))
                 self.vault_key_file.write_bytes(vault_key.private_bytes(
                     encoding=Encoding.PEM,
                     format=PrivateFormat.PKCS8,
-                    encryption_algorithm=None
+                    encryption_algorithm=encrypt
                 ))
                 msg(f"Saved vault key to file: {self.vault_key_file}")
             return vault_key
