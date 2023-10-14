@@ -196,7 +196,7 @@ class Config:
                 pass
             return load_pem_private_key(
                 data=self.vault_key_file.read_bytes(),
-                password=getpass("Vault Key Passphrase").encode('utf-8')
+                password=getpass("  Vault Key Passphrase: ").encode('utf-8')
             )
         else:
             msg(f"Generating new vault key (RSA {self.vault_key_size})")
@@ -206,7 +206,7 @@ class Config:
             )
             if self.vault_key_file:
                 encrypt = None
-                if passwd := getpass("New Vault Key Passphrase"):
+                if passwd := getpass("  New Vault Key Passphrase: "):
                     encrypt = BestAvailableEncryption(password=passwd.encode('utf-8'))
                 self.vault_key_file.write_bytes(vault_key.private_bytes(
                     encoding=Encoding.PEM,
@@ -414,22 +414,36 @@ def write_oc_pubkey(pubkey: RSAPublicKey, out: IO[bytes]) -> int:
     written += out.write(RR.to_bytes(nwords * 8, 'little'))
     return written
 
+OC_VAULT_BEGIN_MARKER = b"=BEGIN OC VAULT="
+OC_VAULT_END_MARKER = b"==END OC VAULT=="
+
 def install_opencore_efi(conf: Config, src: Path, dest: Path):
     """ Install the OpenCore UEFI executable while baking in the vault public key """
     # FIXME: do this better
     # See OpenCorePkg/Utilities/CreateVault/sign.command
     data = src.read_bytes()
-    offset = data.find(b"=BEGIN OC VAULT=")
+
+    # Find embedded vault key region
+    offset = data.find(OC_VAULT_BEGIN_MARKER)
     if offset < 0:
-        raise RuntimeError(f"Could not find Vault marker in {src}")
-    offset += 16
+        raise RuntimeError(f"Could not find Vault key marker in {src}")
+    offset += len(OC_VAULT_BEGIN_MARKER)
+    end = data.find(OC_VAULT_END_MARKER, offset)
+    if end < 0:
+        raise RuntimeError(f"Could not find Vault end marker in {src}")
+    max_len = end - offset
+
+    # Copy to destination while embedding public key data
     view = memoryview(data)
     with dest.open("wb") as f:
         f.write(view[:offset])
         pubkey_len = write_oc_pubkey(conf.vault_key.public_key(), f)
-        if pubkey_len > 528:
-            raise OverflowError("vault public key data too big")
+        if pubkey_len > max_len:
+            raise OverflowError(f"vault public key data too big ({pubkey_len}B/{max_len}B)")
         f.write(view[offset+pubkey_len:])
+    msg(f"Baked RSA public key into {dest} ({pubkey_len}B/{max_len}B)")
+
+    # SecureBoot-sign result
     sign_pe_image(conf, dest, None,
         dont_cache=conf.sb_cache_opencore == 'never'
             or conf.sb_cache_opencore == 'auto' and not conf.is_vault_persistent)
