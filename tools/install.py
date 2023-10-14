@@ -539,21 +539,22 @@ def install_oc(conf: Config):
 
             # Create folders
             if path.is_dir():
-                target.mkdir()
+                if path.name[0] == '.':
+                    print(f"[skip] {name}/", file=stderr)
+                    path.skip = True
+                else:
+                    target.mkdir()
                 continue
 
             lower = str(name).lower()
 
             # Skip hidden files, except .contentVisibility and .contentFlavour
-            if name.name[0] == '.' and lower not in {'.contentVisibility', '.contentFlavour'}:
-                continue
-
             # Skip documentation and log files
-            if lower.rsplit('.', 1)[-1] in ("html", "log"):
-                continue
-
             # Skip vault files, they are generated from scratch later
-            if lower.startswith("vault."):
+            if ((name.name[0] == '.' and lower not in (".contentvisibility", ".contentflavour"))
+                    or lower.rsplit('.', 1)[-1] in ("html", "log")
+                    or lower.startswith("vault.")):
+                print(f"[skip] {name}", file=stderr)
                 continue
 
             # Fill and install OpenCore config
