@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
+# OpenCore installer script with Vault and SecureBoot support
+# (c) 2022-2023 Taeyeon Mori
 
+# ===================================================================
+# Dependencies (See requirements.txt)
+
+# Stdlib
 from abc import ABC, abstractmethod
 from argparse import ArgumentParser
 from base64 import b32hexencode, b64decode
@@ -14,17 +20,23 @@ from sys import argv, stderr
 from typing import (IO, Any, Callable, Literal, Optional, Sequence, TypeVar,
                     Union)
 
+# Vault Crypto
 from cryptography.hazmat.primitives.asymmetric.padding import PKCS1v15
 from cryptography.hazmat.primitives.asymmetric.rsa import (
     RSAPrivateKey, RSAPublicKey, generate_private_key)
 from cryptography.hazmat.primitives.hashes import SHA256
-from cryptography.hazmat.primitives.serialization import (Encoding,
+from cryptography.hazmat.primitives.serialization import (BestAvailableEncryption,
+                                                          Encoding,
                                                           PrivateFormat,
                                                           load_pem_private_key)
+
+# SecureBoot Crypto
+from signify.authenticode import SignedPEFile
+
+# Utilities
 from dotenv import dotenv_values
 from oclib import (OcConfig, dump_plist, get_nested_key, read_plist,
                    set_nested_key)
-from signify.authenticode import SignedPEFile
 
 # ===================================================================
 # Helpers
@@ -200,6 +212,8 @@ class Config:
 
 # ===================================================================
 # Crypto
+# -------------------------------------------------------------------
+# Vault Hashing
 def hash_file(conf: Config, path: Path) -> bytes:
     with path.open('rb') as f:
         return file_digest(f, conf.vault_hash_fn).digest()
@@ -232,6 +246,10 @@ def maybe_copy_and_hash(conf: Config, src: Path, dst: Optional[Path], return_dig
 # -------------------------------------------------------------------
 # SecureBoot signing tools
 class Sbctl(SignTool):
+    """
+    Sign EFI binaries using machine sbctl.8 setup.
+    https://github.com/Foxboron/sbctl
+    """
     def __init__(self, path: Optional[str]=None):
         self.exepath = lookup_tool("sbctl", path)
 
@@ -245,6 +263,10 @@ class Sbctl(SignTool):
 
 
 class Sbsign(SignTool):
+    """
+    Sign EFI binaries with key and cert files using the sbsign.1 tool.
+    https://github.com/phrack/sbsigntools
+    """
     def __init__(self, key: str, cert: str, path: Optional[str]=None):
         self.exepath = lookup_tool("sbsign", path)
         self.keyfile = ensure_existing(key)
@@ -261,6 +283,10 @@ class Sbsign(SignTool):
 
 
 class Cacheonly(SignTool):
+    """
+    Don't sign anything, but use previously signed binaries from cache.
+    Allows for rebuilding persistent-key vault without SecureBoot keys.
+    """
     def __init__(self, allow_unsigned: Optional[str]=None):
         self.allow_unsigned = allow_unsigned.lower() in ('yes', 'true')
 
@@ -278,6 +304,7 @@ SB_TOOLS = {
 }
 
 def get_pe_hash(pe: SignedPEFile, hash_fn=sha256) -> bytes:
+    """ Get the AuthentiCode hash of a signed PE binary """
     fp = pe.get_fingerprinter()
     fp.add_authenticode_hashers(hash_fn)
     return next(iter(fp.hashes()['authentihash'].values()))
@@ -349,7 +376,11 @@ def install_sign_efi(conf: Config, src: Path, dst: Path) -> bytes:
 # -------------------------------------------------------------------
 # OpenCore Vault
 def write_oc_pubkey(pubkey: RSAPublicKey, out: IO[bytes]) -> int:
-    """ Taken from OpenCore Utilities/RsaTool/RsaTool.c """
+    """
+    Serialize OpenCore Vault RSA public key.
+    Return number of bytes that were written to out.
+    See OpenCore source at Utilities/RsaTool/RsaTool.c
+    """
     written = 0
     # /* Output size of RSA key in 64-bit words */
     nwords = pubkey.key_size // 64
@@ -360,7 +391,6 @@ def write_oc_pubkey(pubkey: RSAPublicKey, out: IO[bytes]) -> int:
     B = 2**64 # /* B = 2^64 */
     # /* Calculate and output N0inv = -1 / N[0] mod 2^64 */
     N0inv = pow(N, -1, B)
-    #N0inv = -1 / N % B # XXX: ??????????
     N0inv = B - N0inv
     written += out.write(N0inv.to_bytes(8, 'little'))
     # /* Calculate R = 2^(# of key bits) */
@@ -369,16 +399,8 @@ def write_oc_pubkey(pubkey: RSAPublicKey, out: IO[bytes]) -> int:
     RR = R ** 2 % N
     # /* Write out modulus as little endian array of integers. */
     written += out.write(N.to_bytes(nwords * 8, 'little'))
-    #for i in range(nwords * 2):
-    #    n = N % B # /* n = N mod B */
-    #    written += out.write(n.to_bytes(4, 'little'))
-    #    N >>= 32 # /*  N = N/B */
     # /* Write R^2 as little endian array of integers. */
     written += out.write(RR.to_bytes(nwords * 8, 'little'))
-    #for i in range(nwords * 2):
-    #    rr = RR % B # /* rr = RR mod B */
-    #    written += out.write(rr.to_bytes(4, 'little'))
-    #    RR >>= 32 # /* RR = RR/B */
     return written
 
 def install_opencore_efi(conf: Config, src: Path, dest: Path):
@@ -434,6 +456,7 @@ ENV_CONFIG_KEYS: dict[str, tuple[tuple[str,...], Callable[[str], PlistValue]]] =
 }
 
 def install_config_plist(conf: Config, template: Path, dest: Path) -> bytes:
+    """ Substitute values from .env file into config.plist and copy to ESP """
     data: OcConfig = read_plist(template)
 
     for key in ENV_CONFIG_KEYS & conf.env.keys():
@@ -448,17 +471,20 @@ def install_config_plist(conf: Config, template: Path, dest: Path) -> bytes:
 # ===================================================================
 # Transfer files
 def walk(root: Path):
+    """ Like os.walk but for pathlib Paths """
     for path in root.iterdir():
         yield path
         if path.is_dir() and not hasattr(path, "skip"):
             yield from walk(path)
 
 def install_oc(conf: Config):
+    """ Main OpenCore install process """
     oc_dir = conf.oc_dir
     efi_dir = conf.esp_path / "EFI"
     dest = efi_dir / conf.esp_name
 
     if dest.exists():
+        # Create backup of ESP dir
         if conf.esp_backup:
             backup_dir = efi_dir / conf.esp_backup
             msg_head(f"Renaming {dest} to {conf.esp_backup}")
@@ -474,36 +500,54 @@ def install_oc(conf: Config):
         msg_head(f"Installing OpenCore from {oc_dir} to {dest}")
         dest.mkdir(parents=True)
 
+        # Record installed files for vault
         files: dict[str, bytes] = {}
         def add(name: Path, digest: bytes):
             files[str(name).replace('/', '\\')] = digest
 
         opencore_efi: Optional[Path] = None
 
+        # Install all files from oc_dir
         for path in walk(conf.oc_dir):
             name = path.relative_to(oc_dir)
             target = dest / name
 
+            # Create folders
             if path.is_dir():
                 target.mkdir()
                 continue
 
             lower = str(name).lower()
 
-            if name.name[0] == '.' or lower.rsplit('.', 1)[-1] in ("html", "log") or lower.startswith("vault."):
-                pass
+            # Skip hidden files, except .contentVisibility and .contentFlavour
+            if name.name[0] == '.' and lower not in {'.contentVisibility', '.contentFlavour'}:
+                continue
 
-            elif lower == "config.plist":
+            # Skip documentation and log files
+            if lower.rsplit('.', 1)[-1] in ("html", "log"):
+                continue
+
+            # Skip vault files, they are generated from scratch later
+            if lower.startswith("vault."):
+                continue
+
+            # Fill and install OpenCore config
+            if lower == "config.plist":
+                if name.name != "config.plist":
+                    msg(f"Warning: There may be issues with vault verification if config.plist's filename isn't all lower-case.", color=31)
                 print(f"[conf] {name}", file=stderr)
                 add(name, install_config_plist(conf, path, target))
 
+            # OpenCore binary must be installed last, so remember it for later
             elif lower == "opencore.efi":
                 opencore_efi = path
 
+            # SecureBoot-sign and install EFI drivers
             elif lower.endswith('.efi') and lower.startswith("drivers/"):
                 print(f"[sign] {name}", file=stderr)
                 add(name, install_sign_efi(conf, path, target))
 
+            # Just copy all other files
             else:
                 print(f"[copy] {name}", file=stderr)
                 add(name, copy_and_hash(conf, path, target))
@@ -511,13 +555,16 @@ def install_oc(conf: Config):
         if not opencore_efi:
             raise RuntimeError("Didn't find OpenCore.efi")
 
+        # Build and sign vault
         msg_head("Signing Vault")
         sign_vault(conf, files, dest)
 
-        msg_head("Installing and signing main OpenCore executable")
+        # Build, sign and install main OpenCore binary
+        msg_head("Installing and signing main OpenCore binary")
         install_opencore_efi(conf, opencore_efi, dest / opencore_efi.relative_to(oc_dir))
 
     except:
+        # Restore ESP dir from backup
         if conf.esp_restore_on_error and conf.esp_backup:
             backup_dir = efi_dir / conf.esp_backup
             msg_head(f"Restoring backup from {backup_dir}")
@@ -533,6 +580,7 @@ def main(argv):
     parser.add_argument("env", metavar="NAME=VALUE", nargs="*")
     args = parser.parse_args(argv[1:])
 
+    # Build config from files and commandline
     env = {}
     if not args.env_file:
         args.env_file = [".env"]
@@ -544,9 +592,11 @@ def main(argv):
 
     conf = Config(Path(argv[0]).parent.resolve().parent, env)
 
+    # Confirmation prompt
     if not args.noconfirm and not ask_choice(f"""Install to {conf.esp_path / "EFI" / conf.esp_name}"""):
             return
 
+    # Proceed
     install_oc(conf)
 
 if __name__ == "__main__":
