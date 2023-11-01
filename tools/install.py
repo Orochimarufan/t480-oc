@@ -101,6 +101,7 @@ def b2a_b32h_nopad(data: bytes) -> str:
 class SignTool(ABC):
     @abstractmethod
     def sign_file(self, path: Path, out_path: Optional[Path]): ...
+    def missing_cache(self, path: Path): pass
 
 
 # ===================================================================
@@ -301,12 +302,15 @@ class Cacheonly(SignTool):
     Allows for rebuilding persistent-key vault without SecureBoot keys.
     """
     def __init__(self, allow_unsigned: Optional[str]=None):
-        self.allow_unsigned = allow_unsigned.lower() in ('yes', 'true')
+        self.allow_unsigned = (allow_unsigned or 'no').lower() in ('yes', 'true')
+
+    def missing_cache(self, path):
+        msg_err(f"Missing signed UEFI image {path.name} in {path.dirname}")
 
     def sign_file(self, path, out_path):
         if not self.allow_unsigned:
-            raise LookupError("Suitable signed UEFI image not found in cache (SB_TOOL=cacheonly)")
-        msg_err("No matching signed UEFI image in cache. Copying unsigned image.")
+            raise LookupError(f"Suitable signed UEFI image {path.name} not found in cache (SB_TOOL=cacheonly)")
+        msg_err(f"No matching signed UEFI image in cache. Copying unsigned image {path.name}.")
         maybe_copy_and_hash(conf, path, out_path, False)
 
 
@@ -366,6 +370,8 @@ def sign_pe_image(conf: Config, path: Path, out_path: Optional[Path]=None, *, re
             if cache_ok:
                 msg(f"Using signed image from {cache_file}")
                 return maybe_copy_and_hash(conf, cache_file, out_path if out_path is not None else path, return_file_digest)
+        # No matching signed image in cache
+        conf.sb_tool.missing_cache(cache_file)
 
     # Try to sign the file using configured tool
     conf.sb_tool.sign_file(path, out_path)
