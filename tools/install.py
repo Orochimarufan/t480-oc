@@ -509,6 +509,7 @@ def install_oc(conf: Config):
     oc_dir = conf.oc_dir
     efi_dir = conf.esp_path / "EFI"
     dest = efi_dir / conf.esp_name
+    backup_dir = efi_dir / conf.esp_backup
 
     if not efi_dir.exists() and conf.esp_device:
         msg_head("Trying to mount EFI volume")
@@ -527,7 +528,6 @@ def install_oc(conf: Config):
     if dest.exists():
         # Create backup of ESP dir
         if conf.esp_backup:
-            backup_dir = efi_dir / conf.esp_backup
             msg_head(f"Renaming {dest} to {conf.esp_backup}")
             if backup_dir.exists():
                 msg(f"Removing {backup_dir}")
@@ -607,8 +607,7 @@ def install_oc(conf: Config):
 
     except:
         # Restore ESP dir from backup
-        if conf.esp_restore_on_error and conf.esp_backup:
-            backup_dir = efi_dir / conf.esp_backup
+        if conf.esp_restore_on_error and conf.esp_backup and backup_dir.exists():
             msg_head(f"Restoring backup from {backup_dir}")
             rmtree(dest)
             backup_dir.rename(dest)
