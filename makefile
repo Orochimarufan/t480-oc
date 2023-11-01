@@ -3,26 +3,30 @@ VENV=source $(VENV_DIR)/bin/activate
 
 .PHONY: install
 install: .venv
-	$(VENV) && python tools/install.py
+	$(VENV) && python3 tools/install.py
 
 .PHONY: setup
 setup: .venv/pyvenv.cfg
 
+.PHONY: update
+update: setup
+	$(VENV) && python3 -m pip install --upgrade -r tools/requirements.txt
+
 .PHONY: list
 list: setup
-	$(VENV) && python tools/proper-list.py OC/config.plist kexts
+	$(VENV) && python3 tools/proper-list.py OC/config.plist kexts
 
 .PHONY: ssdts
 ssdts: setup
-	$(VENV) && python tools/proper-list.py OC/config.plist ssdts
+	$(VENV) && python3 tools/proper-list.py OC/config.plist ssdts
 
 .PHONY: newkext
 newkext: setup
-	$(VENV) && python tools/update-kexts.py OC/config.plist
+	$(VENV) && python3 tools/update-kexts.py OC/config.plist
 
 .PHONY: config
 config: .venv/ProperTree/ProperTree.py
-	$(VENV) && python .venv/ProperTree/ProperTree.py OC/config.plist
+	$(VENV) && python3 .venv/ProperTree/ProperTree.py OC/config.plist
 
 .PHONY: env
 env: .env
@@ -31,11 +35,16 @@ env: .env
 # Implementation detail
 .venv/pyvenv.cfg: tools/requirements.txt
 	python3 -m venv .venv
-	$(VENV) && pip install -r tools/requirements.txt
+	# Install cachier manually so pathtools isn't pulled in. It's broken on Python 3.12
+	$(VENV) \
+		&& pip install watchdog portalocker \
+		&& pip install --no-deps cachier \
+		&& pip install -r tools/requirements.txt
 
 .venv/ProperTree/ProperTree.py: .venv/pyvenv.cfg
-	$(VENV) && python tools/get-propertree.py .venv/ProperTree
+	$(VENV) && python3 tools/get-propertree.py .venv/ProperTree
 
 # XXX: The update message isn't very obvious when the editor opens
 .env: .env.sample
 	@if [ -f .env ]; then echo "New .env.sample file detected. There may be new settings to check out."; else echo "No .env file found, copying .env.sample to .env"; cp .env.sample .env; fi
+

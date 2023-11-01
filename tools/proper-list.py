@@ -8,7 +8,7 @@ from pathlib import Path
 from urllib.request import urlopen
 
 from oclib import *
-from pkg_resources import packaging
+import packaging.version
 
 # Fall back to TSV
 try:
