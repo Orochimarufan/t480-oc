@@ -114,6 +114,7 @@ class Config:
     esp_name: str = "OC"
     esp_backup: Optional[str] = "OC.bak"
     esp_restore_on_error: bool = True
+    esp_device: Optional[str] = None
 
     # SecureBoot
     sb_tool: Optional[SignTool]
@@ -172,6 +173,7 @@ class Config:
         self.esp_name = env.get("ESP_NAME", self.esp_name)
         self.esp_backup = env.get("ESP_BACKUP", self.esp_backup) or None
         self.esp_restore_on_error = optmap(str.lower, env.get("ESP_RESTORE_ON_ERROR", None)) not in ('false', 'no')
+        self.esp_device = env.get("ESP_DEVICE", None)
 
         # Vault signing
         self.vault_key_size = int(env.get("VAULT_KEY_SIZE", self.vault_key_size))
@@ -507,6 +509,20 @@ def install_oc(conf: Config):
     oc_dir = conf.oc_dir
     efi_dir = conf.esp_path / "EFI"
     dest = efi_dir / conf.esp_name
+
+    if not efi_dir.exists() and conf.esp_device:
+        msg_head("Trying to mount EFI volume")
+        if os.getuid() != 0:
+            msg_err("Cannot mount volume as non-root")
+        else:
+            import subprocess, shlex
+            def run(*argv):
+                msg(f"Running {shlex.join(argv)}", color=36)
+                return subprocess.run(argv)
+            if sys.platform == 'darwin':
+                run("diskutil", "mount", "nobrowse", "-mountPoint", conf.esp_path, conf.esp_device)
+            else:
+                run("mount", conf.esp_device, conf.esp_path)
 
     if dest.exists():
         # Create backup of ESP dir
