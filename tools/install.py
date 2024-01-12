@@ -13,11 +13,11 @@ from functools import cached_property
 from functools import partial as bind
 from getpass import getpass
 from hashlib import file_digest, sha256
-from os import fspath, isatty
+from os import fspath, isatty, getuid
 from pathlib import Path
 from shutil import copy, rmtree, which
 from subprocess import check_call
-from sys import argv, stderr
+from sys import argv, stderr, platform
 from typing import (IO, Any, Callable, Literal, Optional, Sequence, TypeVar,
                     Union)
 
@@ -519,14 +519,16 @@ def install_oc(conf: Config):
 
     if not efi_dir.exists() and conf.esp_device:
         msg_head("Trying to mount EFI volume")
-        if os.getuid() != 0:
+        if getuid() != 0:
             msg_err("Cannot mount volume as non-root")
         else:
             import subprocess, shlex
             def run(*argv):
-                msg(f"Running {shlex.join(argv)}", color=36)
-                return subprocess.run(argv)
-            if sys.platform == 'darwin':
+                msg(f"Running {shlex.join(map(str, argv))}", color=36)
+                return subprocess.run(argv).check_returncode()
+            if not conf.esp_path.is_dir():
+                    conf.esp_path.mkdir()
+            if platform == 'darwin':
                 run("diskutil", "mount", "nobrowse", "-mountPoint", conf.esp_path, conf.esp_device)
             else:
                 run("mount", conf.esp_device, conf.esp_path)
@@ -573,9 +575,11 @@ def install_oc(conf: Config):
             # Skip hidden files, except .contentVisibility and .contentFlavour
             # Skip documentation and log files
             # Skip vault files, they are generated from scratch later
+            # Skip ACPI source
             if ((name.name[0] == '.' and lower not in (".contentvisibility", ".contentflavour"))
                     or lower.rsplit('.', 1)[-1] in ("html", "log")
-                    or lower.startswith("vault.")):
+                    or lower.startswith("vault.")
+                    or lower.endswith(".dsl")):
                 print(f"[skip] {name}", file=stderr)
                 continue
 
