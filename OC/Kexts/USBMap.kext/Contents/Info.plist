@@ -22,7 +22,7 @@
 	<string>1.1</string>
 	<key>IOKitPersonalities</key>
 	<dict>
-		<key>MacBookPro15,2-RP09.PXSX.TBDU.XHC</key>
+		<key>_SB.PCI0.RP09.PXSX.TBDU.XHC</key>
 		<dict>
 			<key>CFBundleIdentifier</key>
 			<string>com.apple.driver.AppleUSBHostMergeProperties</string>
@@ -33,15 +33,13 @@
 				<key>IOPropertyMatch</key>
 				<dict>
 					<key>pcidebug</key>
-					<string>60:0:0</string>
+					<string>6:0:0</string>
 				</dict>
 			</dict>
 			<key>IOProviderClass</key>
 			<string>AppleUSBHostController</string>
 			<key>IOProviderMergeProperties</key>
 			<dict>
-				<key>kUSBMuxEnabled</key>
-				<true/>
 				<key>port-count</key>
 				<data>AwAAAA==</data>
 				<key>ports</key>
@@ -69,7 +67,7 @@
 			<key>model</key>
 			<string>MacBookPro15,2</string>
 		</dict>
-		<key>MacBookPro15,2-XHC</key>
+		<key>_SB.PCI0.XHC</key>
 		<dict>
 			<key>CFBundleIdentifier</key>
 			<string>com.apple.driver.AppleUSBHostMergeProperties</string>
@@ -87,8 +85,6 @@
 			<string>AppleUSBHostController</string>
 			<key>IOProviderMergeProperties</key>
 			<dict>
-				<key>kUSBMuxEnabled</key>
-				<true/>
 				<key>port-count</key>
 				<data>EAAAAA==</data>
 				<key>ports</key>
@@ -123,22 +119,13 @@
 					<key>HS04</key>
 					<dict>
 						<key>Comment</key>
-						<string>Builtin IR Camera</string>
-						<key>UsbConnector</key>
-						<integer>255</integer>
-						<key>port</key>
-						<data>BQAAAA==</data>
-					</dict>
-					<key>HS05</key>
-					<dict>
-						<key>Comment</key>
 						<string>Builtin Bluetooth</string>
 						<key>UsbConnector</key>
 						<integer>255</integer>
 						<key>port</key>
 						<data>BwAAAA==</data>
 					</dict>
-					<key>HS06</key>
+					<key>HS05</key>
 					<dict>
 						<key>Comment</key>
 						<string>Builtin Camera</string>
@@ -147,16 +134,7 @@
 						<key>port</key>
 						<data>CAAAAA==</data>
 					</dict>
-					<key>HS07</key>
-					<dict>
-						<key>Comment</key>
-						<string>Builtin Fingerprint Reader</string>
-						<key>UsbConnector</key>
-						<integer>255</integer>
-						<key>port</key>
-						<data>CQAAAA==</data>
-					</dict>
-					<key>HS08</key>
+					<key>HS06</key>
 					<dict>
 						<key>Comment</key>
 						<string>Builtin Touchscreen</string>
@@ -167,6 +145,8 @@
 					</dict>
 					<key>SS01</key>
 					<dict>
+						<key>Comment</key>
+						<string>USB 3 Type-A (Bottom Right) (XHCI)</string>
 						<key>UsbConnector</key>
 						<integer>3</integer>
 						<key>port</key>
@@ -184,7 +164,7 @@
 					<key>SS03</key>
 					<dict>
 						<key>Comment</key>
-						<string>USB 3 Type-A (Bottom Right) (XHCI)</string>
+						<string>Builtin Card Reader</string>
 						<key>UsbConnector</key>
 						<integer>255</integer>
 						<key>port</key>
