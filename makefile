@@ -24,9 +24,10 @@ ssdts: setup
 newkext: setup
 	$(VENV) && python3 tools/update-kexts.py OC/config.plist
 
+# Don't use venv for ProperTree since it may break Tkinter
 .PHONY: config
 config: .venv/ProperTree/ProperTree.py
-	$(VENV) && python3 .venv/ProperTree/ProperTree.py OC/config.plist
+	python3 .venv/ProperTree/ProperTree.py OC/config.plist
 
 .PHONY: env
 env: .env
