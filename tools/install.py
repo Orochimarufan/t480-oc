@@ -305,7 +305,7 @@ class Cacheonly(SignTool):
         self.allow_unsigned = (allow_unsigned or 'no').lower() in ('yes', 'true')
 
     def missing_cache(self, path):
-        msg_err(f"Missing signed UEFI image {path.name} in {path.dirname}")
+        msg_err(f"Missing signed UEFI image {path.name} in {path.parent}")
 
     def sign_file(self, path, out_path):
         if not self.allow_unsigned:
