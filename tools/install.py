@@ -510,14 +510,11 @@ def walk(root: Path):
         if path.is_dir() and not hasattr(path, "skip"):
             yield from walk(path)
 
-def install_oc(conf: Config):
-    """ Main OpenCore install process """
-    oc_dir = conf.oc_dir
-    efi_dir = conf.esp_path / "EFI"
-    dest = efi_dir / conf.esp_name
-    backup_dir = efi_dir / conf.esp_backup
-
-    if not efi_dir.exists() and conf.esp_device:
+def mount_esp(conf: Config):
+    """ Mount ESP """
+    if (conf.esp_path / "EFI").exists():
+        return True
+    if conf.esp_device:
         msg_head("Trying to mount EFI volume")
         if getuid() != 0:
             msg_err("Cannot mount volume as non-root")
@@ -532,6 +529,19 @@ def install_oc(conf: Config):
                 run("diskutil", "mount", "nobrowse", "-mountPoint", conf.esp_path, conf.esp_device)
             else:
                 run("mount", conf.esp_device, conf.esp_path)
+            return True
+    else:
+        msg_err(f"ESP doesn't appear to be mounted at {conf.esp_path}, but esp_device isn't specified. Cannot auto-mount.")
+    return False
+
+def install_oc(conf: Config):
+    """ Main OpenCore install process """
+    oc_dir = conf.oc_dir
+    efi_dir = conf.esp_path / "EFI"
+    dest = efi_dir / conf.esp_name
+    backup_dir = efi_dir / conf.esp_backup
+
+    mount_esp(conf)
 
     if dest.exists():
         # Create backup of ESP dir
@@ -626,6 +636,7 @@ def install_oc(conf: Config):
 
 def main(argv):
     parser = ArgumentParser(prog=argv[0])
+    parser.add_argument("--mount-esp", action="store_true", help="Only ensure EFI system partition is mounted, then quit")
     parser.add_argument("-f", "--noconfirm", action="store_true", help="Don't ask for confirmation interactively")
     parser.add_argument("--env-file", type=ensure_existing, action="append", default=[])
     parser.add_argument("env", metavar="NAME=VALUE", nargs="*")
@@ -643,9 +654,13 @@ def main(argv):
 
     conf = Config(Path(argv[0]).parent.resolve().parent, env)
 
+    if args.mount_esp:
+        mount_esp(conf)
+        return
+
     # Confirmation prompt
     if not args.noconfirm and not ask_choice(f"""Install to {conf.esp_path / "EFI" / conf.esp_name}"""):
-            return
+        return
 
     # Proceed
     install_oc(conf)

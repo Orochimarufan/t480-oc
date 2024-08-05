@@ -5,6 +5,10 @@ VENV=source $(VENV_DIR)/bin/activate
 install: .venv
 	$(VENV) && python3 tools/install.py
 
+.PHONY: mountesp
+mountesp:
+	$(VENV) && python3 tools/install.py --mount-esp
+
 .PHONY: setup
 setup: .venv/pyvenv.cfg
 
