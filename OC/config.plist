@@ -1686,6 +1686,24 @@
 				<key>PlistPath</key>
 				<string>Contents/Info.plist</string>
 			</dict>
+			<dict>
+				<key>Comment</key>
+				<string>RestrictEvents.kext: RestrictEvents</string>
+				<key>Enabled</key>
+				<true/>
+				<key>BundlePath</key>
+				<string>RestrictEvents.kext</string>
+				<key>PlistPath</key>
+				<string>Contents/Info.plist</string>
+				<key>ExecutablePath</key>
+				<string>Contents/MacOS/RestrictEvents</string>
+				<key>Arch</key>
+				<string>Any</string>
+				<key>MinKernel</key>
+				<string></string>
+				<key>MaxKernel</key>
+				<string></string>
+			</dict>
 		</array>
 		<key>Block</key>
 		<array>
@@ -2526,7 +2544,7 @@
 				<key>SystemAudioVolume</key>
 				<data>Rg==</data>
 				<key>boot-args</key>
-				<string>rtcfx_exclude=80-AB</string>
+				<string>rtcfx_exclude=80-AB revpatch=auto,sbvmm</string>
 				<key>csr-active-config</key>
 				<data>AAAAAA==</data>
 				<key>prev-lang:kbd</key>
