@@ -4,7 +4,7 @@ import io
 import os
 import plistlib
 from base64 import b64encode
-from typing import Sequence, TypedDict
+from typing import Sequence, TypedDict, Union
 
 
 # OC Config Schema
@@ -73,11 +73,11 @@ class PlistWriter(plistlib._PlistWriter):
         self.file.write(b"</data>\n")
 
 
-def read_plist(path: str|os.PathLike) -> dict:
+def read_plist(path: Union[str, os.PathLike]) -> dict:
     with open(path, 'rb') as f:
         return plistlib.load(f)
 
-def save_plist(path: str|os.PathLike, data: dict):
+def save_plist(path: Union[str, os.PathLike], data: dict):
     tmp = os.fspath(path) + ".tmp"
     try:
         with open(tmp, 'wb') as f:
@@ -121,3 +121,4 @@ def yesno(prompt: str) -> bool:
         print(prompt, " (y/n) ", end="")
         answer = input().strip().lower()
     return answer[0] == "y"
+

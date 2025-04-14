@@ -26,7 +26,7 @@ def print_tsv(content):
         print("\t".join(map(str, row)))
 
 # Kext updates
-kext_github_map: dict[str, str]|None = None
+kext_github_map: Union[dict[str, str], None] = None
 
 try:
     from cachier import cachier
